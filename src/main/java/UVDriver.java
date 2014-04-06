@@ -1,10 +1,13 @@
+import java.io.BufferedWriter;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
@@ -23,6 +26,22 @@ import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
 public class UVDriver extends Configured implements Tool {
+	
+	public static long starttime;
+	public static long endtime;
+	
+	public static void startTimer(){
+		starttime = System.currentTimeMillis();
+	}
+	
+	public static void stopTimer(){
+		endtime = System.currentTimeMillis();
+	}
+	
+	public static float getJobTimeInSecs(){
+		return (endtime-starttime)/(float)1000;
+	}
+	
 
 	public static class MPreMap extends MapReduceBase implements
 			Mapper<LongWritable, Text, Text, Text> {
@@ -35,11 +54,11 @@ public class UVDriver extends Configured implements Tool {
 				throws IOException {
 
 			// Input: (lineNo, lineContent)
-			
+
 			// Split each line using seperator based on the dataset.
 			String line[] = null;
 			String seperator = null;
-			if (Constants.BIG_DATA) {
+			if (Settings.BIG_DATA) {
 				seperator = Constants.BIG_DATA_SEPERATOR;
 			} else {
 				seperator = Constants.SMALL_DATA_SEPERATOR;
@@ -85,22 +104,83 @@ public class UVDriver extends Configured implements Tool {
 			float average = ((float) sum) / totalRatingCount;
 
 			for (int i = 0; i < movieID.size(); i++) {
-				valText.set(key.toString() + " " + movieID.get(i) + " "
+				valText.set("M " + key.toString() + " " + movieID.get(i) + " "
 						+ (rating.get(i) - average));
 				output.collect(null, valText);
 			}
-			
-			// Output: (null, <userid, movieid, normalizedrating>)
-			
+
+			// Output: (null, <M userid, movieid, normalizedrating>)
+
 		}
 	}
 	
-	
-	
-	public static class Constants {
+	public void initializeUV(){
+		try {
+			FileSystem fs = FileSystem.get(new Configuration());
+			Path uFilePath = new Path(Settings.TEMP_PATH + "/U_0/U");
+			Path vFilePath = new Path(Settings.TEMP_PATH + "/V_0/V");
+
+			BufferedWriter br = null;
+
+			// 2 a. Initalize U
+			br = new BufferedWriter(new OutputStreamWriter(fs.create(uFilePath,
+					true)));
+
+			for (int i = 1; i <= Settings.noOfUsers; ++i)
+				for (int j = 1; j <= Settings.noOfCommonFeatures; ++j) {
+					br.write("U " + i + " " + j + " " + 1 + "\n");
+				}
+
+			br.close();
+
+			// 2 b. Initialize V
+			br = new BufferedWriter(new OutputStreamWriter(fs.create(vFilePath,
+					true)));
+
+			for (int i = 1; i <= Settings.noOfCommonFeatures; ++i)
+				for (int j = 1; j <= Settings.noOfMovies; ++j) {
+					br.write("V " + i + " " + j + " " + 1 + "\n");
+				}
+
+			br.close();
+
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+	}
+
+	public static class Settings {
+
 		public static final boolean BIG_DATA = false;
+
+		public static String INPUT_SEPERATOR = "";
+		public static int noOfUsers = 0;
+		public static int noOfMovies = 0;
+		public static int noOfCommonFeatures = 10;
+
+		public static final String NORMALIZE_DATA_PATH = "normalize";
+		public static String TEMP_PATH = "temp";
+
+		static {
+			if (BIG_DATA) {
+				INPUT_SEPERATOR = Constants.BIG_DATA_SEPERATOR;
+				noOfUsers = Constants.BIG_DATA_USERS;
+				noOfMovies = Constants.BIG_DATA_MOVIES;
+			} else {
+				INPUT_SEPERATOR = Constants.BIG_DATA_SEPERATOR;
+				noOfUsers = Constants.SMALL_DATA_USERS;
+				noOfMovies = Constants.SMALL_DATA_MOVIES;
+			}
+		}
+	}
+
+	public static class Constants {
 		public static final String BIG_DATA_SEPERATOR = "::";
 		public static final String SMALL_DATA_SEPERATOR = "\\s";
+		public static final int BIG_DATA_USERS = 71567;
+		public static final int BIG_DATA_MOVIES = 10681;
+		public static final int SMALL_DATA_USERS = 943;
+		public static final int SMALL_DATA_MOVIES = 1682;
 	}
 
 	public static class JobRunner implements Runnable {
@@ -123,8 +203,10 @@ public class UVDriver extends Configured implements Tool {
 
 		while (!control.allFinished()) {
 			System.out.println(new Date().toString() + ": Still running...");
-			System.out.println("Waiting jobs: " + control.getWaitingJobs().toString());
-			System.out.println("Successful jobs: " + control.getSuccessfulJobs().toString());
+			System.out.println("Waiting jobs: "
+					+ control.getWaitingJobs().toString());
+			System.out.println("Successful jobs: "
+					+ control.getSuccessfulJobs().toString());
 			Thread.sleep(5000);
 		}
 	}
@@ -139,7 +221,9 @@ public class UVDriver extends Configured implements Tool {
 		// 3. Iterate to update U and V.
 
 		// Write Job details for each of the above steps.
-		
+
+		Settings.TEMP_PATH = args[2];
+
 		// 1. Pre-process the data.
 
 		JobConf conf1 = new JobConf(UVDriver.class);
@@ -154,24 +238,40 @@ public class UVDriver extends Configured implements Tool {
 		conf1.setOutputValueClass(Text.class);
 
 		FileInputFormat.addInputPath(conf1, new Path(args[0]));
-		FileOutputFormat.setOutputPath(conf1, new Path(args[1]));
+		FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/"
+				+ Settings.NORMALIZE_DATA_PATH));
 
-		// Run the jobs.
 		Job job1 = new Job(conf1);
 
 		JobControl jobControl = new JobControl("jobControl");
 		jobControl.addJob(job1);
 
+		startTimer();
 		handleRun(jobControl);
+		stopTimer();
+
+		System.out.println("Total time for Normalizing data: "
+				+ getJobTimeInSecs() + "seconds");
+
+		// 2. Initialize UV Matrices.
+		
+		startTimer();
+		initializeUV();
+		stopTimer();
+
+		System.out.println("Total time for Normalizing data: "
+				+ getJobTimeInSecs() + "seconds");
+		
+		// 3. Iterate and update U, V matrices.
+
 		return 0;
 	}
 
 	public static void main(String args[]) throws Exception {
 
 		System.out.println("Program started");
-		if (args.length != 2) {
-			System.err
-					.println("Usage: UVDriver <input path> <output path>");
+		if (args.length != 3) {
+			System.err.println("Usage: UVDriver <input path> <output path> <fs path>");
 			System.exit(-1);
 		}
 
