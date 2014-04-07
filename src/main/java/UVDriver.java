@@ -26,22 +26,23 @@ import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
 public class UVDriver extends Configured implements Tool {
-	
+
 	public static long starttime;
 	public static long endtime;
-	
-	public static void startTimer(){
+	public static String uMatrixPath = "U_0";
+	public static String vMatrixPath = "V_0";
+
+	public static void startTimer() {
 		starttime = System.currentTimeMillis();
 	}
-	
-	public static void stopTimer(){
+
+	public static void stopTimer() {
 		endtime = System.currentTimeMillis();
 	}
-	
-	public static float getJobTimeInSecs(){
-		return (endtime-starttime)/(float)1000;
+
+	public static float getJobTimeInSecs() {
+		return (endtime - starttime) / (float) 1000;
 	}
-	
 
 	public static class MPreMap extends MapReduceBase implements
 			Mapper<LongWritable, Text, Text, Text> {
@@ -113,8 +114,120 @@ public class UVDriver extends Configured implements Tool {
 
 		}
 	}
-	
-	public void initializeUV(){
+
+	public static class UpdateUMapper extends MapReduceBase implements
+			Mapper<LongWritable, Text, Text, Text> {
+
+		public void map(LongWritable arg0, Text arg1,
+				OutputCollector<Text, Text> arg2, Reporter arg3)
+				throws IOException {
+			// TODO Auto-generated method stub
+
+		}
+
+	}
+
+	public static class UpdateUReducer extends MapReduceBase implements
+			Reducer<Text, Text, Text, Text> {
+
+		public void reduce(Text arg0, Iterator<Text> arg1,
+				OutputCollector<Text, Text> arg2, Reporter arg3)
+				throws IOException {
+			// TODO Auto-generated method stub
+
+		}
+
+	}
+
+	public static class UpdateVMapper extends MapReduceBase implements
+			Mapper<LongWritable, Text, Text, Text> {
+
+		public void map(LongWritable arg0, Text arg1,
+				OutputCollector<Text, Text> arg2, Reporter arg3)
+				throws IOException {
+			// TODO Auto-generated method stub
+
+		}
+
+	}
+
+	public static class UpdateVReducer extends MapReduceBase implements
+			Reducer<Text, Text, Text, Text> {
+
+		public void reduce(Text arg0, Iterator<Text> arg1,
+				OutputCollector<Text, Text> arg2, Reporter arg3)
+				throws IOException {
+			// TODO Auto-generated method stub
+
+		}
+
+	}
+
+	public void optimizeUVMatrix(int matrixType, int iteration)
+			throws IOException, InterruptedException {
+		JobConf conf2 = new JobConf(UVDriver.class);
+
+		conf2.setOutputKeyClass(Text.class);
+		conf2.setOutputValueClass(Text.class);
+
+		// Set the paths of the previous iteration matrices
+		// so that we can load them when needed during job.
+		conf2.set("uPath", Settings.TEMP_PATH + "/" + uMatrixPath);
+		conf2.set("vPath", Settings.TEMP_PATH + "/" + vMatrixPath);
+
+		Path matricesPaths[] = new Path[2];
+
+		if (matrixType == Constants.U_Matrix) {
+			conf2.setMapperClass(UpdateUMapper.class);
+			conf2.setReducerClass(UpdateUReducer.class);
+			// Setting the path of the previous iteration matrix.
+			matricesPaths[0] = new Path(Settings.TEMP_PATH + "/" + uMatrixPath);
+			// Updating path of the current iteration matrix.
+			uMatrixPath = "U_" + iteration;
+
+		} else if (matrixType == Constants.V_Matrix) {
+			conf2.setMapperClass(UpdateVMapper.class);
+			conf2.setReducerClass(UpdateVReducer.class);
+			// Setting the path of the previous iteration matrix.
+			matricesPaths[0] = new Path(Settings.TEMP_PATH + "/" + vMatrixPath);
+			// Updating path of the current iteration matrix.
+			vMatrixPath = "V_" + iteration;
+
+		} else {
+			System.out.println("SWERR: Unhandled matrix type. Cannot optimize");
+			return;
+		}
+
+		// Path of the matrix M which contains userid/movieid -
+		// normalized_ratings.
+		matricesPaths[1] = new Path(Settings.TEMP_PATH + "/"
+				+ Settings.NORMALIZE_DATA_PATH);
+
+		// Set the input and output file paths for the current job
+		// iteration which updates the matrix U or V depending on its
+		// previous iteration matrix and updates the values to a new
+		// iteration matrix.
+
+		FileInputFormat.setInputPaths(conf2, matricesPaths);
+		if (matrixType == Constants.U_Matrix) {
+			FileOutputFormat.setOutputPath(conf2, new Path(Settings.TEMP_PATH
+					+ "/" + uMatrixPath));
+		} else if (matrixType == Constants.V_Matrix) {
+			FileOutputFormat.setOutputPath(conf2, new Path(Settings.TEMP_PATH
+					+ "/" + vMatrixPath));
+		}
+
+		// Start the Job.
+
+		Job job2 = new Job(conf2);
+
+		JobControl jobControl = new JobControl("jobControl");
+		jobControl.addJob(job2);
+		handleRun(jobControl);
+
+	}
+
+	public void initializeUV() {
 		try {
 			FileSystem fs = FileSystem.get(new Configuration());
 			Path uFilePath = new Path(Settings.TEMP_PATH + "/U_0/U");
@@ -122,7 +235,7 @@ public class UVDriver extends Configured implements Tool {
 
 			BufferedWriter br = null;
 
-			// 2 a. Initalize U
+			// 2 a. Initialize U
 			br = new BufferedWriter(new OutputStreamWriter(fs.create(uFilePath,
 					true)));
 
@@ -149,6 +262,31 @@ public class UVDriver extends Configured implements Tool {
 		}
 	}
 
+	public void normalizeM() throws IOException, InterruptedException {
+
+		JobConf conf1 = new JobConf(UVDriver.class);
+		conf1.setMapperClass(MPreMap.class);
+		conf1.setReducerClass(MPreReduce.class);
+		conf1.setJarByClass(UVDriver.class);
+
+		conf1.setMapOutputKeyClass(Text.class);
+		conf1.setMapOutputValueClass(Text.class);
+
+		conf1.setOutputKeyClass(Text.class);
+		conf1.setOutputValueClass(Text.class);
+
+		FileInputFormat.addInputPath(conf1, new Path(Settings.INPUT_PATH));
+		FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/"
+				+ Settings.NORMALIZE_DATA_PATH));
+
+		Job job1 = new Job(conf1);
+
+		JobControl jobControl = new JobControl("jobControl");
+		jobControl.addJob(job1);
+		handleRun(jobControl);
+
+	}
+
 	public static class Settings {
 
 		public static final boolean BIG_DATA = false;
@@ -156,9 +294,13 @@ public class UVDriver extends Configured implements Tool {
 		public static String INPUT_SEPERATOR = "";
 		public static int noOfUsers = 0;
 		public static int noOfMovies = 0;
-		public static int noOfCommonFeatures = 10;
+
+		public static final int noOfCommonFeatures = 10;
+		public static final int noOfIterationsRequired = 2;
 
 		public static final String NORMALIZE_DATA_PATH = "normalize";
+		public static String INPUT_PATH = "input";
+		public static String OUTPUT_PATH = "output";
 		public static String TEMP_PATH = "temp";
 
 		static {
@@ -175,12 +317,18 @@ public class UVDriver extends Configured implements Tool {
 	}
 
 	public static class Constants {
+
 		public static final String BIG_DATA_SEPERATOR = "::";
 		public static final String SMALL_DATA_SEPERATOR = "\\s";
+
 		public static final int BIG_DATA_USERS = 71567;
 		public static final int BIG_DATA_MOVIES = 10681;
 		public static final int SMALL_DATA_USERS = 943;
 		public static final int SMALL_DATA_MOVIES = 1682;
+
+		public static final int M_Matrix = 1;
+		public static final int U_Matrix = 2;
+		public static final int V_Matrix = 3;
 	}
 
 	public static class JobRunner implements Runnable {
@@ -222,48 +370,46 @@ public class UVDriver extends Configured implements Tool {
 
 		// Write Job details for each of the above steps.
 
+		Settings.INPUT_PATH = args[0];
+		Settings.OUTPUT_PATH = args[1];
 		Settings.TEMP_PATH = args[2];
 
 		// 1. Pre-process the data.
-
-		JobConf conf1 = new JobConf(UVDriver.class);
-		conf1.setMapperClass(MPreMap.class);
-		conf1.setReducerClass(MPreReduce.class);
-		conf1.setJarByClass(UVDriver.class);
-
-		conf1.setMapOutputKeyClass(Text.class);
-		conf1.setMapOutputValueClass(Text.class);
-
-		conf1.setOutputKeyClass(Text.class);
-		conf1.setOutputValueClass(Text.class);
-
-		FileInputFormat.addInputPath(conf1, new Path(args[0]));
-		FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/"
-				+ Settings.NORMALIZE_DATA_PATH));
-
-		Job job1 = new Job(conf1);
-
-		JobControl jobControl = new JobControl("jobControl");
-		jobControl.addJob(job1);
-
 		startTimer();
-		handleRun(jobControl);
+		normalizeM();
 		stopTimer();
 
 		System.out.println("Total time for Normalizing data: "
 				+ getJobTimeInSecs() + "seconds");
 
 		// 2. Initialize UV Matrices.
-		
 		startTimer();
 		initializeUV();
 		stopTimer();
 
-		System.out.println("Total time for Normalizing data: "
+		System.out.println("Total time for Initializing U and V: "
 				+ getJobTimeInSecs() + "seconds");
-		
-		// 3. Iterate and update U, V matrices.
 
+		// 3. Iterate and update U, V matrices.
+		for (int i = 1; i <= Settings.noOfIterationsRequired; i++) {
+
+			startTimer();
+			optimizeUVMatrix(Constants.U_Matrix, i);
+			stopTimer();
+
+			System.out
+					.println("Total time for optimizing U Matrix in iteration: "
+							+ i + " is: " + getJobTimeInSecs() + "seconds");
+
+			startTimer();
+			optimizeUVMatrix(Constants.V_Matrix, i);
+			stopTimer();
+
+			System.out
+					.println("Total time for optimizing V Matrix in iteration: "
+							+ i + " is: " + getJobTimeInSecs() + "seconds");
+
+		}
 		return 0;
 	}
 
@@ -271,7 +417,8 @@ public class UVDriver extends Configured implements Tool {
 
 		System.out.println("Program started");
 		if (args.length != 3) {
-			System.err.println("Usage: UVDriver <input path> <output path> <fs path>");
+			System.err
+					.println("Usage: UVDriver <input path> <output path> <fs path>");
 			System.exit(-1);
 		}
 
@@ -281,6 +428,12 @@ public class UVDriver extends Configured implements Tool {
 		ToolRunner.run(new UVDriver(), otherArgs);
 		System.out.println("Program complete.");
 		System.exit(0);
+	}
+
+	public void map(LongWritable arg0, Text arg1,
+			OutputCollector<Text, Text> arg2, Reporter arg3) throws IOException {
+		// TODO Auto-generated method stub
+
 	}
 
 }
