@@ -50,7 +50,7 @@ public class UVDriver extends Configured implements Tool {
 		return (endtime - starttime) / (float) 1000;
 	}
 
-	public static class MPreMap extends MapReduceBase implements
+	public static class RowMPreMap extends MapReduceBase implements
 			Mapper<LongWritable, Text, Text, Text> {
 
 		private Text keyText = new Text();
@@ -64,7 +64,7 @@ public class UVDriver extends Configured implements Tool {
 
 			// Split each line using seperator based on the dataset.
 			String line[] = null;
-			
+
 			line = value.toString().split(Settings.INPUT_SEPERATOR);
 
 			keyText.set(line[0]);
@@ -75,7 +75,7 @@ public class UVDriver extends Configured implements Tool {
 		}
 	}
 
-	public static class MPreReduce extends MapReduceBase implements
+	public static class RowMPreReduce extends MapReduceBase implements
 			Reducer<Text, Text, Text, Text> {
 
 		private Text valText = new Text();
@@ -110,7 +110,73 @@ public class UVDriver extends Configured implements Tool {
 				output.collect(null, valText);
 			}
 
-			// Output: (null, <M userid, movieid, normalizedrating>)
+			// Output1: (null, <M userid, movieid, normalizedrating>)
+			// Output2: (sqrt(avg/features) )
+
+		}
+	}
+
+	public static class ColMPreMap extends MapReduceBase implements
+			Mapper<LongWritable, Text, Text, Text> {
+
+		private Text keyText = new Text();
+		private Text valText = new Text();
+
+		public void map(LongWritable key, Text value,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// Input: (lineNo, lineContent)
+			// Split each line using seperator based on the dataset.
+
+			String line[] = null;
+
+			line = value.toString().split("\\s");
+
+			keyText.set(line[2]);
+			valText.set(line[1] + "," + line[3]);
+
+			// Output: (userid, "movieid,rating")
+			output.collect(keyText, valText);
+		}
+	}
+
+	public static class ColMPreReduce extends MapReduceBase implements
+			Reducer<Text, Text, Text, Text> {
+
+		private Text valText = new Text();
+
+		public void reduce(Text key, Iterator<Text> values,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// Input: (movieid, List<userid, rating>)
+
+			float sum = 0.0F;
+			int totalRatingCount = 0;
+
+			ArrayList<String> userID = new ArrayList<String>();
+			ArrayList<Float> rating = new ArrayList<Float>();
+
+			while (values.hasNext()) {
+				String[] userRatingPair = values.next().toString().split(",");
+				userID.add(userRatingPair[0]);
+				Float parseRating = Float.parseFloat(userRatingPair[1]);
+				rating.add(parseRating);
+
+				sum += parseRating;
+				totalRatingCount++;
+			}
+
+			float average = ((float) sum) / totalRatingCount;
+
+			for (int i = 0; i < userID.size(); i++) {
+				valText.set("M " + userID.get(i) + " " + key.toString() + " "
+						+ (rating.get(i) - average));
+				output.collect(null, valText);
+			}
+
+			// Output1: (null, <M userid, movieid, normalizedrating>)
 
 		}
 	}
@@ -530,6 +596,11 @@ public class UVDriver extends Configured implements Tool {
 	}
 
 	public void initializeUV() {
+
+		// 2. Get the reasonable initial value.
+		// We are simply choosing a constant value as we already normalized
+		// the input matrix.
+
 		try {
 			FileSystem fs = FileSystem.get(new Configuration());
 			Path uFilePath = new Path(Settings.TEMP_PATH + "/U_0/U");
@@ -543,7 +614,8 @@ public class UVDriver extends Configured implements Tool {
 
 			for (int i = 1; i <= Settings.noOfUsers; ++i)
 				for (int j = 1; j <= Settings.noOfCommonFeatures; ++j) {
-					br.write("U " + i + " " + j + " " + 1 + "\n");
+					br.write("U " + i + " " + j + " " + Settings.INITIAL_VALUE
+							+ "\n");
 				}
 
 			br.close();
@@ -554,7 +626,8 @@ public class UVDriver extends Configured implements Tool {
 
 			for (int i = 1; i <= Settings.noOfCommonFeatures; ++i)
 				for (int j = 1; j <= Settings.noOfMovies; ++j) {
-					br.write("V " + i + " " + j + " " + 1 + "\n");
+					br.write("V " + i + " " + j + " " + Settings.INITIAL_VALUE
+							+ "\n");
 				}
 
 			br.close();
@@ -567,8 +640,8 @@ public class UVDriver extends Configured implements Tool {
 	public void normalizeM() throws IOException, InterruptedException {
 
 		JobConf conf1 = new JobConf(UVDriver.class);
-		conf1.setMapperClass(MPreMap.class);
-		conf1.setReducerClass(MPreReduce.class);
+		conf1.setMapperClass(RowMPreMap.class);
+		conf1.setReducerClass(RowMPreReduce.class);
 		conf1.setJarByClass(UVDriver.class);
 
 		conf1.setMapOutputKeyClass(Text.class);
@@ -579,43 +652,53 @@ public class UVDriver extends Configured implements Tool {
 
 		FileInputFormat.addInputPath(conf1, new Path(Settings.INPUT_PATH));
 		FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/"
+				+ Settings.NORMALIZE_DATA_PATH_TEMP));
+
+		JobConf conf2 = new JobConf(UVDriver.class);
+		conf2.setMapperClass(ColMPreMap.class);
+		conf2.setReducerClass(ColMPreReduce.class);
+		conf2.setJarByClass(UVDriver.class);
+
+		conf2.setMapOutputKeyClass(Text.class);
+		conf2.setMapOutputValueClass(Text.class);
+
+		conf2.setOutputKeyClass(Text.class);
+		conf2.setOutputValueClass(Text.class);
+
+		FileInputFormat.addInputPath(conf2, new Path(Settings.TEMP_PATH + "/"
+				+ Settings.NORMALIZE_DATA_PATH_TEMP));
+		FileOutputFormat.setOutputPath(conf2, new Path(Settings.TEMP_PATH + "/"
 				+ Settings.NORMALIZE_DATA_PATH));
 
 		Job job1 = new Job(conf1);
+		Job job2 = new Job(conf2);
 
 		JobControl jobControl = new JobControl("jobControl");
 		jobControl.addJob(job1);
+		jobControl.addJob(job2);
+		job2.addDependingJob(job1);
 		handleRun(jobControl);
 
 	}
 
 	public static class Settings {
 
-		public static final boolean BIG_DATA = false;
+		public static boolean BIG_DATA = false;
 
 		public static String INPUT_SEPERATOR = "";
 		public static int noOfUsers = 0;
 		public static int noOfMovies = 0;
 
 		public static final int noOfCommonFeatures = 10;
-		public static final int noOfIterationsRequired = 30;
+		public static final int noOfIterationsRequired = 3;
+		public static final float INITIAL_VALUE = 0.1f;
 
+		public static final String NORMALIZE_DATA_PATH_TEMP = "normalize_temp";
 		public static final String NORMALIZE_DATA_PATH = "normalize";
 		public static String INPUT_PATH = "input";
 		public static String OUTPUT_PATH = "output";
 		public static String TEMP_PATH = "temp";
 
-		static {
-			if (BIG_DATA) {
-				INPUT_SEPERATOR = Constants.BIG_DATA_SEPERATOR;
-				noOfUsers = Constants.BIG_DATA_USERS;
-				noOfMovies = Constants.BIG_DATA_MOVIES;
-			} else {
-				INPUT_SEPERATOR = Constants.SMALL_DATA_SEPERATOR;
-				noOfUsers = Constants.SMALL_DATA_USERS;
-				noOfMovies = Constants.SMALL_DATA_MOVIES;
-			}
-		}
 	}
 
 	public static class Constants {
@@ -677,9 +760,23 @@ public class UVDriver extends Configured implements Tool {
 
 		// Write Job details for each of the above steps.
 
+		Settings.BIG_DATA = Boolean.parseBoolean(args[3]);
 		Settings.INPUT_PATH = args[0];
 		Settings.OUTPUT_PATH = args[1];
 		Settings.TEMP_PATH = args[2];
+		Settings.BIG_DATA = Boolean.parseBoolean(args[3]);
+
+		if (Settings.BIG_DATA) {
+			System.out.println("Working on BIG DATA.");
+			Settings.INPUT_SEPERATOR = Constants.BIG_DATA_SEPERATOR;
+			Settings.noOfUsers = Constants.BIG_DATA_USERS;
+			Settings.noOfMovies = Constants.BIG_DATA_MOVIES;
+		} else {
+			System.out.println("Working on Small DATA.");
+			Settings.INPUT_SEPERATOR = Constants.SMALL_DATA_SEPERATOR;
+			Settings.noOfUsers = Constants.SMALL_DATA_USERS;
+			Settings.noOfMovies = Constants.SMALL_DATA_MOVIES;
+		}
 
 		// 1. Pre-process the data.
 		startTimer();
@@ -723,7 +820,7 @@ public class UVDriver extends Configured implements Tool {
 	public static void main(String args[]) throws Exception {
 
 		System.out.println("Program started");
-		if (args.length != 3) {
+		if (args.length != 4) {
 			System.err
 					.println("Usage: UVDriver <input path> <output path> <fs path>");
 			System.exit(-1);
@@ -735,12 +832,6 @@ public class UVDriver extends Configured implements Tool {
 		ToolRunner.run(new UVDriver(), otherArgs);
 		System.out.println("Program complete.");
 		System.exit(0);
-	}
-
-	public void map(LongWritable arg0, Text arg1,
-			OutputCollector<Text, Text> arg2, Reporter arg3) throws IOException {
-		// TODO Auto-generated method stub
-
 	}
 
 }
