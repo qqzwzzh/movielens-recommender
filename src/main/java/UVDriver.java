@@ -8,6 +8,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.Iterator;
 
 import org.apache.hadoop.conf.Configuration;
@@ -198,8 +199,7 @@ public class UVDriver extends Configured implements Tool {
 	public static class UpdateUReducer extends MapReduceBase implements
 			Reducer<Text, Text, Text, Text> {
 
-		// We will be directly using movieID index. So noOfMovies + 1
-		float[][] vFeature = new float[Settings.noOfMovies + 1][Settings.noOfCommonFeatures];
+		HashMap<Integer, Float[]> vFeatureHm = new HashMap<Integer, Float[]>();
 
 		public void configure(JobConf job) {
 			System.out.println("Configuring UpdateUReducer");
@@ -237,9 +237,16 @@ public class UVDriver extends Configured implements Tool {
 
 						// Storing each feature value against movieID and
 						// featureIndex.
-						// movieID starts from 1 and featureIndex starts from 0.
+						// movieID is not sequential and featureIndex starts from 0.
 						// So we store at fi - 1.
-						vFeature[movieid][fi - 1] = fv;
+						Float[] featureValues = vFeatureHm.get(movieid);
+						if(featureValues == null){
+							featureValues = new Float[Settings.noOfCommonFeatures];
+							featureValues[fi-1] = fv;
+							vFeatureHm.put(movieid, featureValues);
+						}else{
+							featureValues[fi-1] = fv;
+						}
 					}
 
 					br.close();
@@ -299,7 +306,7 @@ public class UVDriver extends Configured implements Tool {
 				int movieID = movieIDs.get(i);
 				float sum = 0;
 				for (int j = 0; j < Settings.noOfCommonFeatures; j++) {
-					sum += uFeature[j] * vFeature[movieID][j];
+					sum += uFeature[j] * vFeatureHm.get(movieID)[j];
 				}
 				productUV.set(i, sum);
 			}
@@ -325,19 +332,19 @@ public class UVDriver extends Configured implements Tool {
 				for (int j = 0; j < movieIDs.size(); j++) {
 					int movieID = movieIDs.get(j);
 					float subtract = ratings.get(j) - productUV.get(j)
-							+ uFeature[i] * vFeature[movieID][i];
-					innerProduct += subtract * vFeature[movieID][i];
-					viSquare += vFeature[movieID][i] * vFeature[movieID][i];
+							+ uFeature[i] * vFeatureHm.get(movieID)[i];
+					innerProduct += subtract * vFeatureHm.get(movieID)[i];
+					viSquare += vFeatureHm.get(movieID)[i] * vFeatureHm.get(movieID)[i];
 				}
 
 				float updatedFeatureValue = (float) innerProduct / viSquare;
 
 				for (int j = 0; j < movieIDs.size(); j++) {
-					int mid = movieIDs.get(j);
+					int movieID = movieIDs.get(j);
 
 					// Subtract old feature contribution and add new
 					// feature contribution.
-					productUV.set(j, productUV.get(j) + vFeature[mid][i]
+					productUV.set(j, productUV.get(j) +vFeatureHm.get(movieID)[i]
 							* (updatedFeatureValue - uFeature[i]));
 				}
 
@@ -374,8 +381,7 @@ public class UVDriver extends Configured implements Tool {
 	public static class UpdateVReducer extends MapReduceBase implements
 			Reducer<Text, Text, Text, Text> {
 
-		// We will be directly using userID in index. So noOfUsers + 1
-		float[][] uFeature = new float[Settings.noOfUsers + 1][Settings.noOfCommonFeatures];
+		HashMap<Integer, Float[]> uFeatureHm = new HashMap<Integer, Float[]>();
 
 		public void configure(JobConf job) {
 			System.out.println("Configuring UpdateUReducer");
@@ -415,7 +421,14 @@ public class UVDriver extends Configured implements Tool {
 						// featureIndex.
 						// movieID starts from 1 and featureIndex starts from 0.
 						// So we store at fi - 1.
-						uFeature[userid][fi - 1] = fv;
+						Float[] featureValues = uFeatureHm.get(userid);
+						if(featureValues == null){
+							featureValues = new Float[Settings.noOfCommonFeatures];
+							featureValues[fi-1] = fv;
+							uFeatureHm.put(userid, featureValues);
+						}else{
+							featureValues[fi-1] = fv;
+						}
 					}
 
 					br.close();
@@ -475,7 +488,7 @@ public class UVDriver extends Configured implements Tool {
 				int userID = userIDs.get(i);
 				float sum = 0;
 				for (int j = 0; j < Settings.noOfCommonFeatures; j++) {
-					sum += vFeature[j] * uFeature[userID][j];
+					sum += vFeature[j] * uFeatureHm.get(userID)[j];
 				}
 				productUV.set(i, sum);
 			}
@@ -501,9 +514,9 @@ public class UVDriver extends Configured implements Tool {
 				for (int j = 0; j < userIDs.size(); j++) {
 					int userID = userIDs.get(j);
 					float subtract = ratings.get(j) - productUV.get(j)
-							+ vFeature[i] * uFeature[userID][i];
-					innerProduct += subtract * uFeature[userID][i];
-					ujSquare += uFeature[userID][i] * uFeature[userID][i];
+							+ vFeature[i] * uFeatureHm.get(userID)[i];
+					innerProduct += subtract * uFeatureHm.get(userID)[i];
+					ujSquare += uFeatureHm.get(userID)[i] * uFeatureHm.get(userID)[i];
 				}
 
 				float updatedFeatureValue = (float) innerProduct / ujSquare;
@@ -513,7 +526,7 @@ public class UVDriver extends Configured implements Tool {
 
 					// Subtract old feature contribution and add new
 					// feature contribution.
-					productUV.set(j, productUV.get(j) + uFeature[userID][i]
+					productUV.set(j, productUV.get(j) + uFeatureHm.get(userID)[i]
 							* (updatedFeatureValue - vFeature[i]));
 				}
 
