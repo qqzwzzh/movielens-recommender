@@ -244,7 +244,7 @@ public class UVDriver extends Configured implements Tool {
 				line = value.toString().split("\\s");
 
 			// Output: (U userid, null)
-			output.collect(new Text(line[0]), null);
+			output.collect(new Text(line[0]), new Text("1"));
 		}
 	}
 
@@ -252,14 +252,14 @@ public class UVDriver extends Configured implements Tool {
 			Reducer<Text, Text, Text, Text> {
 
 		private static int noOfCommonFeatures;
-		private static int initialValue;
+		private static float initialValue;
 
 		public void configure(JobConf conf) {
 
 			String var2String = conf.get("noOfCommonFeatures");
 			noOfCommonFeatures = Integer.parseInt(var2String);
 			var2String = conf.get("INITIAL_VALUE");
-			initialValue = Integer.parseInt(var2String);
+			initialValue = Float.parseFloat(var2String);
 		}
 
 		public void reduce(Text key, Iterator<Text> values,
@@ -304,7 +304,7 @@ public class UVDriver extends Configured implements Tool {
 				line = value.toString().split("\\s");
 
 			// Output: (movieid, null)
-			output.collect(new Text(line[1]), null);
+			output.collect(new Text(line[1]), new Text("1"));
 
 		}
 	}
@@ -313,13 +313,13 @@ public class UVDriver extends Configured implements Tool {
 			Reducer<Text, Text, Text, Text> {
 
 		private static int noOfCommonFeatures;
-		private static int initialValue;
+		private static float initialValue;
 
 		public void configure(JobConf conf) {
 			String var2String = conf.get("noOfCommonFeatures");
 			noOfCommonFeatures = Integer.parseInt(var2String);
 			var2String = conf.get("INITIAL_VALUE");
-			initialValue = Integer.parseInt(var2String);
+			initialValue = Float.parseFloat(var2String);
 		}
 
 		public void reduce(Text key, Iterator<Text> values,
@@ -807,6 +807,7 @@ public class UVDriver extends Configured implements Tool {
 
 	public void initializeUV() {
 
+		System.out.println("Initializing U and V..");
 		// 2. Get the reasonable initial value.
 		// We are simply choosing a constant value as we already normalized
 		// the input matrix.
@@ -852,8 +853,8 @@ public class UVDriver extends Configured implements Tool {
 			conf2.set("noOfCommonFeatures", Settings.noOfCommonFeatures.toString());
 			conf2.set("INITIAL_VALUE", Settings.INITIAL_VALUE.toString());
 			
-			FileInputFormat.addInputPath(conf1, new Path(Settings.INPUT_PATH));
-			FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/V_0"));
+			FileInputFormat.addInputPath(conf2, new Path(Settings.INPUT_PATH));
+			FileOutputFormat.setOutputPath(conf2, new Path(Settings.TEMP_PATH + "/V_0"));
 
 			Job job1 = new Job(conf1);
 			Job job2 = new Job(conf2);
@@ -870,7 +871,8 @@ public class UVDriver extends Configured implements Tool {
 	}
 
 	public void normalizeM() throws IOException, InterruptedException {
-
+		
+		System.out.println("Normalizing..");
 		JobConf conf1 = new JobConf(UVDriver.class);
 		conf1.setMapperClass(RowMPreMap.class);
 		conf1.setReducerClass(RowMPreReduce.class);
@@ -931,7 +933,7 @@ public class UVDriver extends Configured implements Tool {
 		public static int noOfMovies = 0;
 
 		public static final Integer noOfCommonFeatures = 10;
-		public static final int noOfIterationsRequired = 3;
+		public static final int noOfIterationsRequired = 10;
 		public static final Float INITIAL_VALUE = 0.1f;
 
 		public static final String NORMALIZE_DATA_PATH_TEMP = "normalize_temp";
@@ -1028,6 +1030,7 @@ public class UVDriver extends Configured implements Tool {
 		normalizeM();
 		stopTimer();
 
+		printline();
 		System.out.println("Total time for Normalizing data: "
 				+ getJobTimeInSecs() + "seconds");
 
@@ -1036,9 +1039,11 @@ public class UVDriver extends Configured implements Tool {
 		initializeUV();
 		stopTimer();
 
+		printline();
 		System.out.println("Total time for Initializing U and V: "
 				+ getJobTimeInSecs() + "seconds");
 
+		printline();
 		// 3. Iterate and update U, V matrices.
 		for (int i = 1; i <= Settings.noOfIterationsRequired; i++) {
 
@@ -1046,6 +1051,7 @@ public class UVDriver extends Configured implements Tool {
 			optimizeUVMatrix(Constants.U_Matrix, i);
 			stopTimer();
 
+			printline();
 			System.out
 					.println("Total time for optimizing U Matrix in iteration: "
 							+ i + " is: " + getJobTimeInSecs() + "seconds");
@@ -1054,12 +1060,22 @@ public class UVDriver extends Configured implements Tool {
 			optimizeUVMatrix(Constants.V_Matrix, i);
 			stopTimer();
 
+			printline();
 			System.out
 					.println("Total time for optimizing V Matrix in iteration: "
 							+ i + " is: " + getJobTimeInSecs() + "seconds");
 
 		}
 		return 0;
+	}
+	
+	private void printline(){
+		System.out.print("\n");	
+		for(int i = 0; i < 80; i++){
+			System.out.print("=");
+		}
+		System.out.print("\n");	
+		System.out.flush();
 	}
 
 	public static void main(String args[]) throws Exception {
