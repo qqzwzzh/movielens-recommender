@@ -4,6 +4,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -26,8 +28,12 @@ import org.apache.hadoop.mapred.Mapper;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reducer;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapred.TextInputFormat;
+import org.apache.hadoop.mapred.TextOutputFormat;
 import org.apache.hadoop.mapred.jobcontrol.Job;
 import org.apache.hadoop.mapred.jobcontrol.JobControl;
+import org.apache.hadoop.mapred.lib.MultipleOutputs;
+import org.apache.hadoop.mapred.lib.MultipleTextOutputFormat;
 import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
@@ -56,6 +62,12 @@ public class UVDriver extends Configured implements Tool {
 
 		private Text keyText = new Text();
 		private Text valText = new Text();
+		private static Boolean BIG_DATA;
+
+		public void configure(JobConf conf) {
+			String var2String = conf.get("BIG_DATA");
+			BIG_DATA = Boolean.parseBoolean(var2String);
+		}
 
 		public void map(LongWritable key, Text value,
 				OutputCollector<Text, Text> output, Reporter reporter)
@@ -66,13 +78,17 @@ public class UVDriver extends Configured implements Tool {
 			// Split each line using seperator based on the dataset.
 			String line[] = null;
 
-			line = value.toString().split(Settings.INPUT_SEPERATOR);
+			if (BIG_DATA)
+				line = value.toString().split("::");
+			else
+				line = value.toString().split("\\s");
 
 			keyText.set(line[0]);
 			valText.set(line[1] + "," + line[2]);
 
 			// Output: (userid, "movieid,rating")
 			output.collect(keyText, valText);
+
 		}
 	}
 
@@ -84,36 +100,57 @@ public class UVDriver extends Configured implements Tool {
 		public void reduce(Text key, Iterator<Text> values,
 				OutputCollector<Text, Text> output, Reporter reporter)
 				throws IOException {
+			try {
 
-			// Input: (userid, List<movieid, rating>)
+				// Input: (userid, List<movieid, rating>)
 
-			float sum = 0.0F;
-			int totalRatingCount = 0;
+				float sum = 0.0F;
+				int totalRatingCount = 0;
 
-			ArrayList<String> movieID = new ArrayList<String>();
-			ArrayList<Float> rating = new ArrayList<Float>();
+				ArrayList<String> movieID = new ArrayList<String>();
+				ArrayList<Float> rating = new ArrayList<Float>();
 
-			while (values.hasNext()) {
-				String[] movieRatingPair = values.next().toString().split(",");
-				movieID.add(movieRatingPair[0]);
-				Float parseRating = Float.parseFloat(movieRatingPair[1]);
-				rating.add(parseRating);
+				while (values.hasNext()) {
+					String[] movieRatingPair = values.next().toString()
+							.split(",");
+					movieID.add(movieRatingPair[0]);
+					Float parseRating = Float.parseFloat(movieRatingPair[1]);
+					rating.add(parseRating);
 
-				sum += parseRating;
-				totalRatingCount++;
+					sum += parseRating;
+					totalRatingCount++;
+				}
+
+				float average = ((float) sum) / totalRatingCount;
+
+				for (int i = 0; i < movieID.size(); i++) {
+					valText.set("M " + key.toString() + " " + movieID.get(i)
+							+ " " + (rating.get(i) - average));
+					output.collect(null, valText);
+				}
+
+			} catch (Exception e) {
+				// A way to debug run time exceptions when you dont have
+				// access to cluster logs.
+				String valueString = "";
+				while (values.hasNext()) {
+					valueString += values.next().toString();
+				}
+
+				StringWriter sw = new StringWriter();
+				e.printStackTrace(new PrintWriter(sw));
+				String exceptionAsString = sw.toString();
+
+				Path pt = new Path("errorfile");
+				FileSystem fs = FileSystem.get(new Configuration());
+				BufferedWriter br = new BufferedWriter(new OutputStreamWriter(
+						fs.create(pt, true)));
+				br.write(exceptionAsString + "\nkey: " + key.toString()
+						+ "\nvalues: " + valueString);
+				br.close();
 			}
 
-			float average = ((float) sum) / totalRatingCount;
-
-			for (int i = 0; i < movieID.size(); i++) {
-				valText.set("M " + key.toString() + " " + movieID.get(i) + " "
-						+ (rating.get(i) - average));
-				output.collect(null, valText);
-			}
-
-			// Output1: (null, <M userid, movieid, normalizedrating>)
-			// Output2: (sqrt(avg/features) )
-
+			// Output: (null, <M userid, movieid, normalizedrating>)
 		}
 	}
 
@@ -182,6 +219,124 @@ public class UVDriver extends Configured implements Tool {
 		}
 	}
 
+	public static class InitializeUMapper extends MapReduceBase implements
+			Mapper<LongWritable, Text, Text, Text> {
+
+		private static Boolean BIG_DATA;
+
+		public void configure(JobConf conf) {
+			String var2String = conf.get("BIG_DATA");
+			BIG_DATA = Boolean.parseBoolean(var2String);
+		}
+
+		public void map(LongWritable key, Text value,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// Input: (lineNo, lineContent)
+
+			// Split each line using seperator based on the dataset.
+			String line[] = null;
+
+			if (BIG_DATA)
+				line = value.toString().split("::");
+			else
+				line = value.toString().split("\\s");
+
+			// Output: (U userid, null)
+			output.collect(new Text(line[0]), null);
+		}
+	}
+
+	public static class InitializeUReducer extends MapReduceBase implements
+			Reducer<Text, Text, Text, Text> {
+
+		private static int noOfCommonFeatures;
+		private static int initialValue;
+
+		public void configure(JobConf conf) {
+
+			String var2String = conf.get("noOfCommonFeatures");
+			noOfCommonFeatures = Integer.parseInt(var2String);
+			var2String = conf.get("INITIAL_VALUE");
+			initialValue = Integer.parseInt(var2String);
+		}
+
+		public void reduce(Text key, Iterator<Text> values,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// Input: (userid, nullList)
+			for (int i = 1; i <= noOfCommonFeatures; i++) {
+
+				// Output1: (U userid featureID, featureVal)
+				output.collect(null, new Text("U " + key.toString() + " " + i
+						+ " " + initialValue));
+
+			}
+		}
+
+	}
+
+	public static class InitializeVMapper extends MapReduceBase implements
+			Mapper<LongWritable, Text, Text, Text> {
+
+		private static Boolean BIG_DATA;
+
+		public void configure(JobConf conf) {
+			String var2String = conf.get("BIG_DATA");
+			BIG_DATA = Boolean.parseBoolean(var2String);
+			var2String = conf.get("noOfCommonFeatures");
+		}
+
+		public void map(LongWritable key, Text value,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// Input: (lineNo, lineContent)
+
+			// Split each line using seperator based on the dataset.
+			String line[] = null;
+
+			if (BIG_DATA)
+				line = value.toString().split("::");
+			else
+				line = value.toString().split("\\s");
+
+			// Output: (movieid, null)
+			output.collect(new Text(line[1]), null);
+
+		}
+	}
+
+	public static class InitializeVReducer extends MapReduceBase implements
+			Reducer<Text, Text, Text, Text> {
+
+		private static int noOfCommonFeatures;
+		private static int initialValue;
+
+		public void configure(JobConf conf) {
+			String var2String = conf.get("noOfCommonFeatures");
+			noOfCommonFeatures = Integer.parseInt(var2String);
+			var2String = conf.get("INITIAL_VALUE");
+			initialValue = Integer.parseInt(var2String);
+		}
+
+		public void reduce(Text key, Iterator<Text> values,
+				OutputCollector<Text, Text> output, Reporter reporter)
+				throws IOException {
+
+			// Input: (movieid, nullList)
+			for (int i = 1; i <= noOfCommonFeatures; i++) {
+
+				// Output2: (V featureID, movieID, featureVal)
+				output.collect(null, new Text("V " + i + " " + key.toString()
+						+ " " + initialValue));
+
+			}
+		}
+	}
+
 	public static class UpdateUMapper extends MapReduceBase implements
 			Mapper<LongWritable, Text, Text, Text> {
 
@@ -200,13 +355,44 @@ public class UVDriver extends Configured implements Tool {
 			Reducer<Text, Text, Text, Text> {
 
 		HashMap<Integer, Float[]> vFeatureHm = new HashMap<Integer, Float[]>();
+		private int noOfCommonFeatures;
+		private static BufferedWriter br;
+
+		private void setup() throws IOException {
+			// A way to debug run time exceptions when you dont have
+			// access to cluster logs.
+			Path pt = new Path("errorfile");
+			FileSystem fs;
+
+			fs = FileSystem.get(new Configuration());
+			br = new BufferedWriter(new OutputStreamWriter(fs.create(pt, true)));
+		}
+
+		public void close() throws IOException {
+			br.close();
+		}
 
 		public void configure(JobConf job) {
 			System.out.println("Configuring UpdateUReducer");
 
+			String commonFeaturesStr = job.get("noOfCommonFeatures");
+			noOfCommonFeatures = Integer.parseInt(commonFeaturesStr);
+
 			String vPath = job.get("vPath");
 			System.out.println("VPATH: " + vPath);
 			loadVMatrix(new Path(vPath));
+
+			try {
+				setup();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+
+			try {
+				br.write("No. of features: " + noOfCommonFeatures);
+			} catch (IOException e1) {
+				e1.printStackTrace();
+			}
 
 		}
 
@@ -237,15 +423,16 @@ public class UVDriver extends Configured implements Tool {
 
 						// Storing each feature value against movieID and
 						// featureIndex.
-						// movieID is not sequential and featureIndex starts from 0.
+						// movieID is not sequential and featureIndex starts
+						// from 0.
 						// So we store at fi - 1.
 						Float[] featureValues = vFeatureHm.get(movieid);
-						if(featureValues == null){
-							featureValues = new Float[Settings.noOfCommonFeatures];
-							featureValues[fi-1] = fv;
+						if (featureValues == null) {
+							featureValues = new Float[noOfCommonFeatures];
+							featureValues[fi - 1] = fv;
 							vFeatureHm.put(movieid, featureValues);
-						}else{
-							featureValues[fi-1] = fv;
+						} else {
+							featureValues[fi - 1] = fv;
 						}
 					}
 
@@ -305,7 +492,7 @@ public class UVDriver extends Configured implements Tool {
 			for (int i = 0; i < movieIDs.size(); i++) {
 				int movieID = movieIDs.get(i);
 				float sum = 0;
-				for (int j = 0; j < Settings.noOfCommonFeatures; j++) {
+				for (int j = 0; j < noOfCommonFeatures; j++) {
 					sum += uFeature[j] * vFeatureHm.get(movieID)[j];
 				}
 				productUV.set(i, sum);
@@ -315,7 +502,7 @@ public class UVDriver extends Configured implements Tool {
 
 			// Pick a random permutation of feature vector to start the update.
 			ArrayList<Integer> featureIndex = new ArrayList<Integer>(10);
-			for (int i = 0; i < Settings.noOfCommonFeatures; i++)
+			for (int i = 0; i < noOfCommonFeatures; i++)
 				featureIndex.add(i);
 			Collections.shuffle(featureIndex);
 
@@ -334,7 +521,8 @@ public class UVDriver extends Configured implements Tool {
 					float subtract = ratings.get(j) - productUV.get(j)
 							+ uFeature[i] * vFeatureHm.get(movieID)[i];
 					innerProduct += subtract * vFeatureHm.get(movieID)[i];
-					viSquare += vFeatureHm.get(movieID)[i] * vFeatureHm.get(movieID)[i];
+					viSquare += vFeatureHm.get(movieID)[i]
+							* vFeatureHm.get(movieID)[i];
 				}
 
 				float updatedFeatureValue = (float) innerProduct / viSquare;
@@ -344,7 +532,8 @@ public class UVDriver extends Configured implements Tool {
 
 					// Subtract old feature contribution and add new
 					// feature contribution.
-					productUV.set(j, productUV.get(j) +vFeatureHm.get(movieID)[i]
+					productUV.set(j, productUV.get(j)
+							+ vFeatureHm.get(movieID)[i]
 							* (updatedFeatureValue - uFeature[i]));
 				}
 
@@ -353,7 +542,7 @@ public class UVDriver extends Configured implements Tool {
 
 			// Output: (U userId featureIndex featureValue)
 
-			for (int i = 0; i < Settings.noOfCommonFeatures; i++) {
+			for (int i = 0; i < noOfCommonFeatures; i++) {
 				output.collect(null, new Text("U " + key.toString() + " "
 						+ (i + 1) + " " + uFeature[i]));
 			}
@@ -382,9 +571,13 @@ public class UVDriver extends Configured implements Tool {
 			Reducer<Text, Text, Text, Text> {
 
 		HashMap<Integer, Float[]> uFeatureHm = new HashMap<Integer, Float[]>();
+		private static int noOfCommonFeatures;
 
 		public void configure(JobConf job) {
 			System.out.println("Configuring UpdateUReducer");
+
+			String commonFeaturesStr = job.get("noOfCommonFeatures");
+			noOfCommonFeatures = Integer.parseInt(commonFeaturesStr);
 
 			String uPath = job.get("uPath");
 			System.out.println("UPATH: " + uPath);
@@ -422,12 +615,12 @@ public class UVDriver extends Configured implements Tool {
 						// movieID starts from 1 and featureIndex starts from 0.
 						// So we store at fi - 1.
 						Float[] featureValues = uFeatureHm.get(userid);
-						if(featureValues == null){
-							featureValues = new Float[Settings.noOfCommonFeatures];
-							featureValues[fi-1] = fv;
+						if (featureValues == null) {
+							featureValues = new Float[noOfCommonFeatures];
+							featureValues[fi - 1] = fv;
 							uFeatureHm.put(userid, featureValues);
-						}else{
-							featureValues[fi-1] = fv;
+						} else {
+							featureValues[fi - 1] = fv;
 						}
 					}
 
@@ -487,7 +680,7 @@ public class UVDriver extends Configured implements Tool {
 			for (int i = 0; i < userIDs.size(); i++) {
 				int userID = userIDs.get(i);
 				float sum = 0;
-				for (int j = 0; j < Settings.noOfCommonFeatures; j++) {
+				for (int j = 0; j < noOfCommonFeatures; j++) {
 					sum += vFeature[j] * uFeatureHm.get(userID)[j];
 				}
 				productUV.set(i, sum);
@@ -497,7 +690,7 @@ public class UVDriver extends Configured implements Tool {
 
 			// Pick a random permutation of feature vector to start the update.
 			ArrayList<Integer> featureIndex = new ArrayList<Integer>(10);
-			for (int i = 0; i < Settings.noOfCommonFeatures; i++)
+			for (int i = 0; i < noOfCommonFeatures; i++)
 				featureIndex.add(i);
 			Collections.shuffle(featureIndex);
 
@@ -516,7 +709,8 @@ public class UVDriver extends Configured implements Tool {
 					float subtract = ratings.get(j) - productUV.get(j)
 							+ vFeature[i] * uFeatureHm.get(userID)[i];
 					innerProduct += subtract * uFeatureHm.get(userID)[i];
-					ujSquare += uFeatureHm.get(userID)[i] * uFeatureHm.get(userID)[i];
+					ujSquare += uFeatureHm.get(userID)[i]
+							* uFeatureHm.get(userID)[i];
 				}
 
 				float updatedFeatureValue = (float) innerProduct / ujSquare;
@@ -526,7 +720,8 @@ public class UVDriver extends Configured implements Tool {
 
 					// Subtract old feature contribution and add new
 					// feature contribution.
-					productUV.set(j, productUV.get(j) + uFeatureHm.get(userID)[i]
+					productUV.set(j, productUV.get(j)
+							+ uFeatureHm.get(userID)[i]
 							* (updatedFeatureValue - vFeature[i]));
 				}
 
@@ -535,7 +730,7 @@ public class UVDriver extends Configured implements Tool {
 
 			// Output: (U userId featureIndex featureValue)
 
-			for (int i = 0; i < Settings.noOfCommonFeatures; i++) {
+			for (int i = 0; i < noOfCommonFeatures; i++) {
 				output.collect(null,
 						new Text("V " + (i + 1) + " " + key.toString() + " "
 								+ vFeature[i]));
@@ -547,29 +742,29 @@ public class UVDriver extends Configured implements Tool {
 
 	public void optimizeUVMatrix(int matrixType, int iteration)
 			throws IOException, InterruptedException, URISyntaxException {
-		JobConf conf2 = new JobConf(UVDriver.class);
+		JobConf conf3 = new JobConf(UVDriver.class);
 
-		conf2.setOutputKeyClass(Text.class);
-		conf2.setOutputValueClass(Text.class);
+		conf3.setOutputKeyClass(Text.class);
+		conf3.setOutputValueClass(Text.class);
 
 		// Set the paths of the previous iteration matrices
 		// so that we can load them when needed during job.
-		conf2.set("uPath", Settings.TEMP_PATH + "/" + uMatrixPath);
-		conf2.set("vPath", Settings.TEMP_PATH + "/" + vMatrixPath);
+		conf3.set("uPath", Settings.TEMP_PATH + "/" + uMatrixPath);
+		conf3.set("vPath", Settings.TEMP_PATH + "/" + vMatrixPath);
 
 		Path matricesPaths[] = new Path[2];
 
 		if (matrixType == Constants.U_Matrix) {
-			conf2.setMapperClass(UpdateUMapper.class);
-			conf2.setReducerClass(UpdateUReducer.class);
+			conf3.setMapperClass(UpdateUMapper.class);
+			conf3.setReducerClass(UpdateUReducer.class);
 			// Setting the path of the previous iteration matrix.
 			matricesPaths[0] = new Path(Settings.TEMP_PATH + "/" + uMatrixPath);
 			// Updating path of the current iteration matrix.
 			uMatrixPath = "U_" + iteration;
 
 		} else if (matrixType == Constants.V_Matrix) {
-			conf2.setMapperClass(UpdateVMapper.class);
-			conf2.setReducerClass(UpdateVReducer.class);
+			conf3.setMapperClass(UpdateVMapper.class);
+			conf3.setReducerClass(UpdateVReducer.class);
 			// Setting the path of the previous iteration matrix.
 			matricesPaths[0] = new Path(Settings.TEMP_PATH + "/" + vMatrixPath);
 			// Updating path of the current iteration matrix.
@@ -590,21 +785,23 @@ public class UVDriver extends Configured implements Tool {
 		// previous iteration matrix and updates the values to a new
 		// iteration matrix.
 
-		FileInputFormat.setInputPaths(conf2, matricesPaths);
+		FileInputFormat.setInputPaths(conf3, matricesPaths);
 		if (matrixType == Constants.U_Matrix) {
-			FileOutputFormat.setOutputPath(conf2, new Path(Settings.TEMP_PATH
+			FileOutputFormat.setOutputPath(conf3, new Path(Settings.TEMP_PATH
 					+ "/" + uMatrixPath));
 		} else if (matrixType == Constants.V_Matrix) {
-			FileOutputFormat.setOutputPath(conf2, new Path(Settings.TEMP_PATH
+			FileOutputFormat.setOutputPath(conf3, new Path(Settings.TEMP_PATH
 					+ "/" + vMatrixPath));
 		}
 
+		conf3.set("noOfCommonFeatures", Settings.noOfCommonFeatures.toString());
+
 		// Start the Job.
 
-		Job job2 = new Job(conf2);
+		Job job3 = new Job(conf3);
 
 		JobControl jobControl = new JobControl("jobControl");
-		jobControl.addJob(job2);
+		jobControl.addJob(job3);
 		handleRun(jobControl);
 	}
 
@@ -615,35 +812,57 @@ public class UVDriver extends Configured implements Tool {
 		// the input matrix.
 
 		try {
-			FileSystem fs = FileSystem.get(new Configuration());
-			Path uFilePath = new Path(Settings.TEMP_PATH + "/U_0/U");
-			Path vFilePath = new Path(Settings.TEMP_PATH + "/V_0/V");
 
-			BufferedWriter br = null;
+			JobConf conf1 = new JobConf(UVDriver.class);
+			conf1.setMapperClass(InitializeUMapper.class);
+			conf1.setReducerClass(InitializeUReducer.class);
+			conf1.setJarByClass(UVDriver.class);
 
-			// 2 a. Initialize U
-			br = new BufferedWriter(new OutputStreamWriter(fs.create(uFilePath,
-					true)));
+			conf1.setMapOutputKeyClass(Text.class);
+			conf1.setMapOutputValueClass(Text.class);
 
-			for (int i = 1; i <= Settings.noOfUsers; ++i)
-				for (int j = 1; j <= Settings.noOfCommonFeatures; ++j) {
-					br.write("U " + i + " " + j + " " + Settings.INITIAL_VALUE
-							+ "\n");
-				}
+			conf1.setOutputKeyClass(Text.class);
+			conf1.setOutputValueClass(Text.class);
 
-			br.close();
+			conf1.setInputFormat(TextInputFormat.class);
+			conf1.setOutputFormat(TextOutputFormat.class);
 
-			// 2 b. Initialize V
-			br = new BufferedWriter(new OutputStreamWriter(fs.create(vFilePath,
-					true)));
+			conf1.set("BIG_DATA", Settings.BIG_DATA.toString());
+			conf1.set("noOfCommonFeatures", Settings.noOfCommonFeatures.toString());
+			conf1.set("INITIAL_VALUE", Settings.INITIAL_VALUE.toString());
+			
+			FileInputFormat.addInputPath(conf1, new Path(Settings.INPUT_PATH));
+			FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/U_0"));
 
-			for (int i = 1; i <= Settings.noOfCommonFeatures; ++i)
-				for (int j = 1; j <= Settings.noOfMovies; ++j) {
-					br.write("V " + i + " " + j + " " + Settings.INITIAL_VALUE
-							+ "\n");
-				}
+			JobConf conf2 = new JobConf(UVDriver.class);
+			conf2.setMapperClass(InitializeVMapper.class);
+			conf2.setReducerClass(InitializeVReducer.class);
+			conf2.setJarByClass(UVDriver.class);
 
-			br.close();
+			conf2.setMapOutputKeyClass(Text.class);
+			conf2.setMapOutputValueClass(Text.class);
+			
+			conf2.setOutputKeyClass(Text.class);
+			conf2.setOutputValueClass(Text.class);
+
+			conf2.setInputFormat(TextInputFormat.class);
+			conf2.setOutputFormat(TextOutputFormat.class);
+
+			conf2.set("BIG_DATA", Settings.BIG_DATA.toString());
+			conf2.set("noOfCommonFeatures", Settings.noOfCommonFeatures.toString());
+			conf2.set("INITIAL_VALUE", Settings.INITIAL_VALUE.toString());
+			
+			FileInputFormat.addInputPath(conf1, new Path(Settings.INPUT_PATH));
+			FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/V_0"));
+
+			Job job1 = new Job(conf1);
+			Job job2 = new Job(conf2);
+
+			JobControl jobControl = new JobControl("jobControl");
+			jobControl.addJob(job1);
+			jobControl.addJob(job2);
+			job2.addDependingJob(job1);
+			handleRun(jobControl);
 
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -662,6 +881,13 @@ public class UVDriver extends Configured implements Tool {
 
 		conf1.setOutputKeyClass(Text.class);
 		conf1.setOutputValueClass(Text.class);
+
+		conf1.setKeepFailedTaskFiles(true);
+
+		conf1.setInputFormat(TextInputFormat.class);
+		conf1.setOutputFormat(TextOutputFormat.class);
+
+		conf1.set("BIG_DATA", Settings.BIG_DATA.toString());
 
 		FileInputFormat.addInputPath(conf1, new Path(Settings.INPUT_PATH));
 		FileOutputFormat.setOutputPath(conf1, new Path(Settings.TEMP_PATH + "/"
@@ -696,15 +922,17 @@ public class UVDriver extends Configured implements Tool {
 
 	public static class Settings {
 
-		public static boolean BIG_DATA = false;
+		// These static variables will not be seen properly in
+		// distributed mode. Use them carefully. Always pass them
+		// by setting in the configuration object.
+		public static Boolean BIG_DATA = false;
 
-		public static String INPUT_SEPERATOR = "";
 		public static int noOfUsers = 0;
 		public static int noOfMovies = 0;
 
-		public static final int noOfCommonFeatures = 10;
+		public static final Integer noOfCommonFeatures = 10;
 		public static final int noOfIterationsRequired = 3;
-		public static final float INITIAL_VALUE = 0.1f;
+		public static final Float INITIAL_VALUE = 0.1f;
 
 		public static final String NORMALIZE_DATA_PATH_TEMP = "normalize_temp";
 		public static final String NORMALIZE_DATA_PATH = "normalize";
@@ -715,9 +943,6 @@ public class UVDriver extends Configured implements Tool {
 	}
 
 	public static class Constants {
-
-		public static final String BIG_DATA_SEPERATOR = "::";
-		public static final String SMALL_DATA_SEPERATOR = "\\s";
 
 		public static final int BIG_DATA_USERS = 71567;
 		public static final int BIG_DATA_MOVIES = 10681;
@@ -752,6 +977,8 @@ public class UVDriver extends Configured implements Tool {
 			if (i % 20 == 0) {
 				System.out
 						.println(new Date().toString() + ": Still running...");
+				System.out.println("Running jobs: "
+						+ control.getRunningJobs().toString());
 				System.out.println("Waiting jobs: "
 						+ control.getWaitingJobs().toString());
 				System.out.println("Successful jobs: "
@@ -759,6 +986,11 @@ public class UVDriver extends Configured implements Tool {
 			}
 			Thread.sleep(1000);
 			i++;
+		}
+
+		if (control.getFailedJobs() != null) {
+			System.out.println("Failed jobs: "
+					+ control.getFailedJobs().toString());
 		}
 	}
 
@@ -773,20 +1005,20 @@ public class UVDriver extends Configured implements Tool {
 
 		// Write Job details for each of the above steps.
 
-		Settings.BIG_DATA = Boolean.parseBoolean(args[3]);
 		Settings.INPUT_PATH = args[0];
 		Settings.OUTPUT_PATH = args[1];
 		Settings.TEMP_PATH = args[2];
 		Settings.BIG_DATA = Boolean.parseBoolean(args[3]);
 
+		// Setting below variables doesn't mean you can use them in mapper
+		// or reducers. You are not allowed to access them in distributed
+		// methods. Pass them by JobConf if required.
 		if (Settings.BIG_DATA) {
 			System.out.println("Working on BIG DATA.");
-			Settings.INPUT_SEPERATOR = Constants.BIG_DATA_SEPERATOR;
 			Settings.noOfUsers = Constants.BIG_DATA_USERS;
 			Settings.noOfMovies = Constants.BIG_DATA_MOVIES;
 		} else {
 			System.out.println("Working on Small DATA.");
-			Settings.INPUT_SEPERATOR = Constants.SMALL_DATA_SEPERATOR;
 			Settings.noOfUsers = Constants.SMALL_DATA_USERS;
 			Settings.noOfMovies = Constants.SMALL_DATA_MOVIES;
 		}
@@ -835,7 +1067,7 @@ public class UVDriver extends Configured implements Tool {
 		System.out.println("Program started");
 		if (args.length != 4) {
 			System.err
-					.println("Usage: UVDriver <input path> <output path> <fs path>");
+					.println("Usage: UVDriver <input path> <output path> <temp path> <big_data_bool>");
 			System.exit(-1);
 		}
 
