@@ -43,8 +43,8 @@ public class RowMPreReduce extends MapReduceBase implements
 				totalRatingCount++;
 			}
 
-			float average = ((float) sum) / totalRatingCount;
-
+			Float average = ((float) sum) / totalRatingCount;
+			
 			for (int i = 0; i < movieID.size(); i++) {
 				valText.set("M " + key.toString() + " " + movieID.get(i) + " "
 						+ (rating.get(i) - average) + " " + average);
@@ -52,7 +52,7 @@ public class RowMPreReduce extends MapReduceBase implements
 			}
 
 		} catch (Exception e) {
-			// A way to debug run time exceptions when you dont have
+			// A way to debug run time exceptions when you don't have
 			// access to cluster logs.
 			String valueString = "";
 			while (values.hasNext()) {

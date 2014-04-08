@@ -38,7 +38,7 @@ public class ColMPreReduce extends MapReduceBase implements
 			totalRatingCount++;
 		}
 
-		float average = ((float) sum) / totalRatingCount;
+		Float average = ((float) sum) / totalRatingCount;
 
 		for (int i = 0; i < userID.size(); i++) {
 			valText.set("M " + userID.get(i) + " " + key.toString() + " "

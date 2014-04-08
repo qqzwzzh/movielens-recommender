@@ -232,7 +232,7 @@ public class UVDriver extends Configured implements Tool {
 		public static int noOfMovies = 0;
 
 		public static final Integer noOfCommonFeatures = 10;
-		public static final int noOfIterationsRequired = 30;
+		public static final int noOfIterationsRequired = 10;
 		public static final Float INITIAL_VALUE = 0.1f;
 
 		public static final String NORMALIZE_DATA_PATH_TEMP = "normalize_temp";
