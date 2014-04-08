@@ -125,7 +125,7 @@ public class UVDriver extends Configured implements Tool {
 
 				for (int i = 0; i < movieID.size(); i++) {
 					valText.set("M " + key.toString() + " " + movieID.get(i)
-							+ " " + (rating.get(i) - average));
+							+ " " + (rating.get(i) - average) + " " + average);
 					output.collect(null, valText);
 				}
 
@@ -172,7 +172,7 @@ public class UVDriver extends Configured implements Tool {
 			line = value.toString().split("\\s");
 
 			keyText.set(line[2]);
-			valText.set(line[1] + "," + line[3]);
+			valText.set(line[1] + "," + line[3] + "," + line[4]);
 
 			// Output: (userid, "movieid,rating")
 			output.collect(keyText, valText);
@@ -188,19 +188,22 @@ public class UVDriver extends Configured implements Tool {
 				OutputCollector<Text, Text> output, Reporter reporter)
 				throws IOException {
 
-			// Input: (movieid, List<userid, rating>)
+			// Input: (movieid, List<userid, rating, prev-average>)
 
 			float sum = 0.0F;
 			int totalRatingCount = 0;
 
 			ArrayList<String> userID = new ArrayList<String>();
 			ArrayList<Float> rating = new ArrayList<Float>();
+			ArrayList<Float> prevAverage = new ArrayList<Float>();
 
 			while (values.hasNext()) {
 				String[] userRatingPair = values.next().toString().split(",");
 				userID.add(userRatingPair[0]);
 				Float parseRating = Float.parseFloat(userRatingPair[1]);
 				rating.add(parseRating);
+				Float parsePrevAverage = Float.parseFloat(userRatingPair[2]);
+				prevAverage.add(parsePrevAverage);
 
 				sum += parseRating;
 				totalRatingCount++;
@@ -210,11 +213,12 @@ public class UVDriver extends Configured implements Tool {
 
 			for (int i = 0; i < userID.size(); i++) {
 				valText.set("M " + userID.get(i) + " " + key.toString() + " "
-						+ (rating.get(i) - average));
+						+ (rating.get(i) - average) + " " + (average + prevAverage.get(i)));
 				output.collect(null, valText);
 			}
 
-			// Output1: (null, <M userid, movieid, normalizedrating>)
+			// total average subtracted will be added to product matrix when making prediction.
+			// Output1: (null, <M userid, movieid, normalizedrating, totalaverage>)
 
 		}
 	}
@@ -933,7 +937,7 @@ public class UVDriver extends Configured implements Tool {
 		public static int noOfMovies = 0;
 
 		public static final Integer noOfCommonFeatures = 10;
-		public static final int noOfIterationsRequired = 10;
+		public static final int noOfIterationsRequired = 30;
 		public static final Float INITIAL_VALUE = 0.1f;
 
 		public static final String NORMALIZE_DATA_PATH_TEMP = "normalize_temp";
